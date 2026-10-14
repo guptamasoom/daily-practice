@@ -15,8 +15,9 @@
 # MAGIC | 5 | ETL (Failures, Late Data, Schema) | 2 |
 # MAGIC | 6 | Data Modeling | 2 |
 # MAGIC | 7 | Snowflake | 2 |
+# MAGIC | 8 | Monitoring, Logging & Orchestration | 3 |
 # MAGIC
-# MAGIC **Total**: 14 questions
+# MAGIC **Total**: 17 questions
 # MAGIC
 # MAGIC ---
 # MAGIC **Instructions**: Read the question, try to solve it yourself first, then check the solution cell below.
@@ -39,26 +40,39 @@
 # COMMAND ----------
 
 # DBTITLE 1,Solution Q1
-# SOLUTION Q1
-%sql
-WITH ranked_salaries AS (
-  SELECT
-    department_id,
-    emp_name,
-    salary,
-    DENSE_RANK() OVER (
-      PARTITION BY department_id
-      ORDER BY salary DESC
-    ) AS salary_rank
-  FROM employees
-)
-SELECT
-  department_id,
-  emp_name,
-  salary
-FROM ranked_salaries
-WHERE salary_rank = 2
-ORDER BY department_id;
+# MAGIC %sql
+# MAGIC -- SOLUTION Q1
+# MAGIC -- Sample data (temp view so the solution is runnable)
+# MAGIC CREATE OR REPLACE TEMP VIEW employees AS
+# MAGIC SELECT * FROM VALUES
+# MAGIC   (1, 'Amit',   95000, 10),
+# MAGIC   (2, 'Bhavna', 90000, 10),
+# MAGIC   (3, 'Chirag', 85000, 10),
+# MAGIC   (4, 'Divya',  85000, 20),
+# MAGIC   (5, 'Esha',   80000, 20),
+# MAGIC   (6, 'Farhan', 60000, 20),
+# MAGIC   (7, 'Gita',   70000, 30)   -- only 1 employee -> dept 30 excluded
+# MAGIC AS employees(emp_id, emp_name, salary, department_id);
+# MAGIC
+# MAGIC -- 2nd highest salary per department
+# MAGIC WITH ranked_salaries AS (
+# MAGIC   SELECT
+# MAGIC     department_id,
+# MAGIC     emp_name,
+# MAGIC     salary,
+# MAGIC     DENSE_RANK() OVER (
+# MAGIC       PARTITION BY department_id
+# MAGIC       ORDER BY salary DESC
+# MAGIC     ) AS salary_rank
+# MAGIC   FROM employees
+# MAGIC )
+# MAGIC SELECT
+# MAGIC   department_id,
+# MAGIC   emp_name,
+# MAGIC   salary
+# MAGIC FROM ranked_salaries
+# MAGIC WHERE salary_rank = 2
+# MAGIC ORDER BY department_id;
 
 # COMMAND ----------
 
@@ -75,37 +89,82 @@ ORDER BY department_id;
 
 # COMMAND ----------
 
+# MAGIC %sql
+# MAGIC
+# MAGIC CREATE OR REPLACE TABLE logins (
+# MAGIC     user_id INT,
+# MAGIC     login_date DATE
+# MAGIC );
+# MAGIC
+# MAGIC INSERT INTO logins VALUES
+# MAGIC (101, '2026-01-01'),
+# MAGIC (101, '2026-01-02'),
+# MAGIC (101, '2026-01-03'),
+# MAGIC (101, '2026-01-05'),
+# MAGIC (101, '2026-01-06'),
+# MAGIC (101, '2026-01-10'),
+# MAGIC (102, '2026-01-01'),
+# MAGIC (102, '2026-01-02'),
+# MAGIC (102, '2026-01-04'),
+# MAGIC (102, '2026-01-05'),
+# MAGIC (102, '2026-01-06'),
+# MAGIC (103, '2026-01-01'),
+# MAGIC (103, '2026-01-03');
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC with cte as (
+# MAGIC select 
+# MAGIC user_id,login_date
+# MAGIC ,DATE_SUB(login_date,row_number() over(partition by user_id order by login_date)) as grp
+# MAGIC from logins),
+# MAGIC cte1 as(
+# MAGIC select user_id,grp,count(*) as cnt
+# MAGIC from cte
+# MAGIC group by user_id,grp
+# MAGIC ) 
+# MAGIC select user_id,max(cnt) AS max_streak_days from cte1 
+# MAGIC group by user_id
+# MAGIC order by max_streak_days desc;
+
+# COMMAND ----------
+
 # DBTITLE 1,Solution Q2
-# SOLUTION Q2
-%sql
-WITH login_groups AS (
-  SELECT
-    user_id,
-    login_date,
-    -- Group consecutive dates: difference between date and row_number is constant
-    DATE_SUB(login_date, ROW_NUMBER() OVER (
-      PARTITION BY user_id
-      ORDER BY login_date
-    )) AS grp
-  FROM (
-    SELECT DISTINCT user_id, CAST(login_date AS DATE) AS login_date
-    FROM logins
-  )
-),
-streaks AS (
-  SELECT
-    user_id,
-    grp,
-    COUNT(*) AS streak_days
-  FROM login_groups
-  GROUP BY user_id, grp
-)
-SELECT
-  user_id,
-  MAX(streak_days) AS max_streak_days
-FROM streaks
-GROUP BY user_id
-ORDER BY max_streak_days DESC;
+# MAGIC %sql
+# MAGIC -- SOLUTION Q2
+# MAGIC WITH login_groups AS (
+# MAGIC   SELECT
+# MAGIC     user_id,
+# MAGIC     login_date,
+# MAGIC     -- Group consecutive dates: difference between date and row_number is constant
+# MAGIC     DATE_SUB(login_date, ROW_NUMBER() OVER (
+# MAGIC       PARTITION BY user_id
+# MAGIC       ORDER BY login_date
+# MAGIC     )) AS grp
+# MAGIC   FROM (
+# MAGIC     SELECT DISTINCT user_id, CAST(login_date AS DATE) AS login_date
+# MAGIC     FROM logins
+# MAGIC   )
+# MAGIC ),
+# MAGIC streaks AS (
+# MAGIC   SELECT
+# MAGIC     user_id,
+# MAGIC     grp,
+# MAGIC     COUNT(*) AS streak_days
+# MAGIC   FROM login_groups
+# MAGIC   GROUP BY user_id, grp
+# MAGIC )
+# MAGIC SELECT
+# MAGIC   user_id,
+# MAGIC   MAX(streak_days) AS max_streak_days
+# MAGIC FROM streaks
+# MAGIC GROUP BY user_id
+# MAGIC ORDER BY max_streak_days DESC;
+
+# COMMAND ----------
+
+
 
 # COMMAND ----------
 
@@ -902,12 +961,185 @@ print("See comments for full comparison.")
 
 # COMMAND ----------
 
+# DBTITLE 1,Q15: Pipeline Orchestration
+# MAGIC %md
+# MAGIC ## 🛠️ Section 8: Monitoring, Logging & Orchestration (3 Questions)
+# MAGIC
+# MAGIC ---
+# MAGIC ### Q15: Pipeline Orchestration in Databricks
+# MAGIC
+# MAGIC **Scenario**: You have a multi-step ETL pipeline: extract from S3 → transform in Bronze → Silver → Gold → send notification. Steps depend on each other and some can fail.
+# MAGIC
+# MAGIC **Question**: How do you **orchestrate** this pipeline in Databricks? Explain **Databricks Jobs**, task dependencies, retries, and failure handling. What are the alternatives (Airflow, ADF)?
+# MAGIC
+# MAGIC **Hint**: Databricks Jobs = tasks + dependencies (Run If / For Each), with retries and alerting.
+
+# COMMAND ----------
+
+# DBTITLE 1,Solution Q15
+# SOLUTION Q15
+
+"""
+DATABRICKS JOBS — the native orchestrator:
+
+  1. TASK TYPES:
+     - Notebook task: run a notebook (pass parameters)
+     - Python script task: run a .py file
+     - SQL task: run a SQL query or a dashboard refresh
+     - Pipeline task: trigger a Spark Declarative Pipeline (SDP)
+     - dbt task: run a dbt model
+     - Custom: run any code
+
+  2. TASK DEPENDENCIES:
+     - Define an ordered DAG: task B depends on task A (Run After)
+     - 'Run If' condition: run only if previous succeeded / failed / all_done
+     - 'For Each' task: fan-out parallel iterations over a list
+
+  3. RETRIES:
+     - max_retries: re-run the task N times before failing
+     - retry_interval_seconds: wait between retries
+     - Example: max_retries=3, min_retry_interval_millis=60000
+
+  4. FAILURE HANDLING:
+     - on_failure: retry, skip, or stop the whole job
+     - Email / webhook / Slack notifications on failure
+     - 'Run If' with condition 'always' for cleanup tasks
+
+  5. TRIGGERS:
+     - Schedule (cron): e.g., daily at 2 AM
+     - File arrival: trigger when new file lands in S3/ADLS
+     - Table update: trigger when a Delta table changes
+     - Manual / API trigger
+
+ALTERNATIVES:
+  - Apache Airflow: DAGs with Python operators, more flexible but self-managed.
+  - Azure Data Factory (ADF): visual pipeline builder, cloud-native for Azure.
+  - Databricks Jobs is simplest when your entire pipeline is in Databricks.
+
+INTERVIEW POINT:
+  Orchestration = ordering + retries + error handling + alerting.
+  A good pipeline is: idempotent, retriable, observable, and fails fast.
+"""
+
+print("See comments for the full explanation.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Q16: Pipeline Monitoring
+# MAGIC %md
+# MAGIC ---
+# MAGIC ### Q16: Monitoring a Data Pipeline (Observability)
+# MAGIC
+# MAGIC **Scenario**: Your nightly ETL runs "green" (no failures), but analysts complain the reports are wrong — volumes dropped silently, data is stale.
+# MAGIC
+# MAGIC **Question**: What do you **monitor** in a production data pipeline? Cover **pipeline-level** monitoring (runs, durations, SLAs, backlogs) AND **data-level** monitoring (freshness, volume, quality). Which Databricks tools would you use?
+# MAGIC
+# MAGIC **Hint**: Monitor the DATA, not just the JOB. system tables, Lakehouse Monitoring, SQL alerts.
+
+# COMMAND ----------
+
+# DBTITLE 1,Solution Q16
+# SOLUTION Q16
+
+"""
+MONITORING = PIPELINE-LEVEL + DATA-LEVEL
+
+1. PIPELINE / OPERATIONAL MONITORING:
+   - Job runs: success / failure, duration trends, retries
+   - SLAs: did the daily table land before 8 AM?
+   - Backlog: streaming lag, Auto Loader queued files
+   - Compute: utilization, cost per run
+   - Alerting: email / webhook / Slack on failure or SLA breach
+
+2. DATA-LEVEL MONITORING (the half everyone forgets!):
+   - FRESHNESS: MAX(updated_at) — how stale is the table?
+   - VOLUME: row counts per day — sudden drops/spikes = upstream break
+   - QUALITY: null rates, duplicates, value ranges, schema drift
+   - DISTRIBUTION: mean/stddev of key metrics — silent corruption
+
+DATABRICKS TOOLS:
+   - system.lakeflow.* system tables: job + pipeline run history (account-wide)
+   - system.query.* / system.billing.*: query history + cost monitoring
+   - Lakehouse Monitoring: scheduled data-quality monitors on tables
+     (freshness, completeness, drift metrics tracked over time)
+   - Databricks SQL alerts + dashboards: scheduled checks with email/webhook
+
+PATTERN (interview favorite — build it yourself):
+  1. After each ETL run, write metrics to a metrics table:
+     (run_date, table_name, row_count, null_rate, max_updated_at)
+  2. Scheduled SQL compares today's metrics vs a 7-day average
+  3. Alert fires when deviation > threshold (e.g. volume -40%)
+
+KEY POINT:
+  A pipeline that runs GREEN can still deliver WRONG data.
+  Monitor the DATA, not just the JOB.
+"""
+
+print("See comments for the full explanation.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Q17: Logging & Debugging
+# MAGIC %md
+# MAGIC ---
+# MAGIC ### Q17: Logging & Debugging Best Practices (Spark / Databricks)
+# MAGIC
+# MAGIC **Question**: What are the **logging best practices** for Spark/Databricks pipelines (log4j levels, Python `logging` vs `print`, what to log)? Walk me through **debugging a job that failed at 3 AM** — where exactly do you look?
+# MAGIC
+# MAGIC **Hint**: Job run page → error/stack trace → driver logs (stdout/stderr) → Spark UI / query profile → Delta DESCRIBE HISTORY.
+
+# COMMAND ----------
+
+# DBTITLE 1,Solution Q17
+# SOLUTION Q17
+
+"""
+LOGGING BEST PRACTICES:
+
+1. LOG LEVELS (log4j): ERROR > WARN > INFO > DEBUG
+   - Spark default is WARN; use INFO only when debugging
+   - In production pipelines: keep application logs at INFO
+
+2. USE `logging`, NOT `print`:
+   - logger = logging.getLogger("etl")
+     logger.info("loaded %d rows", df.count())   # lazy formatting
+   - print() has no levels, no timestamps, and buffers output
+
+3. WHAT TO LOG (make failures debuggable):
+   - run_id / batch_id / file names (traceability)
+   - row counts IN and OUT of each step (catches data loss)
+   - durations per step, partitions, files written
+   - job version + config for reproducibility
+
+4. NEVER swallow exceptions:
+   - `except: pass` = interview red flag. Fail FAST with a clear message
+     naming the table / file / batch that broke.
+
+DEBUGGING A 3 AM FAILURE (walk-through):
+  1. Job run page: which task failed, when, stack trace
+  2. Read the ROOT exception (bottom of the trace), not the wrapper
+  3. Driver logs: cluster -> Driver logs (stdout/stderr/log4j),
+     or log delivery to S3 for long-term storage
+  4. Spark UI / query profile: which stage/task, shuffle, spill
+  5. Data checks: Delta DESCRIBE HISTORY (recent commits),
+     row counts vs yesterday, schema of the file that failed
+  6. system.access.audit if a permission change is suspected
+
+INTERVIEW POINT:
+  Good logging + idempotent retries + batch IDs = failures become
+  5-minute investigations instead of all-night debugging.
+"""
+
+print("See comments for the full explanation.")
+
+# COMMAND ----------
+
 # DBTITLE 1,Day 1 Complete
 # MAGIC %md
 # MAGIC ---
 # MAGIC ## ✅ Day 1 Complete!
 # MAGIC
-# MAGIC **14 questions covered across 7 categories.**
+# MAGIC **17 questions covered across 8 categories.**
 # MAGIC
 # MAGIC ### Score Yourself:
 # MAGIC | Category | Questions | Your Score (0-2) |
@@ -919,8 +1151,9 @@ print("See comments for full comparison.")
 # MAGIC | ETL | 2 | / 2 |
 # MAGIC | Data Modeling | 2 | / 2 |
 # MAGIC | Snowflake | 2 | / 2 |
+# MAGIC | Monitoring, Logging & Orchestration | 3 | / 3 |
 # MAGIC
-# MAGIC **Total: / 14**
+# MAGIC **Total: / 17**
 # MAGIC
 # MAGIC ---
 # MAGIC Next day: `day_02` notebook with fresh questions! 🚀
