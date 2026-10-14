@@ -12,12 +12,12 @@
 # MAGIC | 2 | Python (Loop/Function/List/Dict) | 2 |
 # MAGIC | 3 | PySpark Coding | 2 |
 # MAGIC | 4 | Spark Optimization & Deep Spark | 2 |
-# MAGIC | 5 | ETL (Failures, Duplicates, Bad Records) | 2 |
+# MAGIC | 5 | ETL (Failures, Duplicates, Bad Records, Fault Tolerance) | 3 |
 # MAGIC | 6 | Data Modeling | 2 |
 # MAGIC | 7 | Snowflake | 2 |
 # MAGIC | 8 | Monitoring, Logging & Orchestration | 3 |
 # MAGIC
-# MAGIC **Total**: 17 questions
+# MAGIC **Total**: 18 questions
 # MAGIC
 # MAGIC **Difficulty**: BASIC → INTERMEDIATE (Week 1)
 # MAGIC
@@ -385,7 +385,7 @@ print("See comments for the full explanation.")
 
 # DBTITLE 1,Q9: Duplicate Records
 # MAGIC %md
-# MAGIC ## 🔄 Section 5: ETL (Failures, Duplicates, Bad Records) (2 Questions)
+# MAGIC ## 🔄 Section 5: ETL — Failures, Duplicates, Bad Records, Fault Tolerance (3 Questions)
 # MAGIC
 # MAGIC ---
 # MAGIC ### Q9: Handling Duplicate Records in a Batch ETL
@@ -528,19 +528,96 @@ display(bad)
 
 # COMMAND ----------
 
-# DBTITLE 1,Q11: Kimball vs Inmon
+# DBTITLE 1,Q11: Fault Tolerance in ETL
 # MAGIC %md
-# MAGIC ## 📊 Section 6: Data Modeling (2 Questions)
-# MAGIC
 # MAGIC ---
-# MAGIC ### Q11: Kimball vs Inmon
+# MAGIC ### Q11: Fault Tolerance in ETL — Retries, Checkpoints & Recovery
 # MAGIC
-# MAGIC **Question**: Explain the difference between the **Kimball** and **Inmon** data warehouse methodologies. Which approach does the **medallion architecture** (Bronze/Silver/Gold) resemble, and why?
+# MAGIC **Scenario**: A 3-hour nightly ETL fails at 80% — a few executor nodes died and S3 threw transient errors. Restarting from scratch is unacceptable; the SLA is 6 AM.
+# MAGIC
+# MAGIC **Question**: How do you make this pipeline **fault-tolerant**? Cover **task-level retries**, **checkpointing**, **idempotent writes**, and what exactly happens when the job is re-run. How do Delta Lake and Auto Loader make recovery easier?
+# MAGIC
+# MAGIC **Hint**: Fault tolerance = RETRY (transient errors) + CHECKPOINT (resume progress) + IDEMPOTENCY (safe re-run).
 
 # COMMAND ----------
 
 # DBTITLE 1,Solution Q11
 # SOLUTION Q11
+
+"""
+FAULT TOLERANCE = RETRY + CHECKPOINT + IDEMPOTENCY
+
+1. TASK-LEVEL RETRIES (Spark, automatic):
+   - A failed TASK is re-run on another executor up to
+     spark.task.maxFailures (default 4)
+   - Speculative execution: slow straggler tasks re-run in parallel,
+     first success wins
+   - You get this for FREE — don't disable it
+
+2. JOB / TASK-LEVEL RETRIES (Databricks Jobs):
+   - Task config: max_retries + min_retry_interval_millis
+   - Repair Run: re-run ONLY the failed tasks of a past run
+     (no full recompute) — perfect for this 80%-failed scenario
+   - Email/webhook alerts notify you so recovery starts fast
+
+3. CHECKPOINTING (resume, don't restart):
+   - Structured Streaming: checkpointLocation stores offsets,
+     state, and the write-ahead log -> exactly-once semantics;
+     a restarted job RESUMES from the last checkpoint
+   - Auto Loader: tracks already-ingested files in the checkpoint
+     (RocksDB), so a re-run never re-ingests the same file
+
+4. IDEMPOTENT WRITES (re-run converges to the same result):
+   - MERGE (upsert) on a business key — safe any number of times
+   - Append + batch_id: filter out your own batch before writing
+   - Overwrite by partition: rewrite only the affected date partition
+   - Delta Lake: a failed write NEVER COMMITS (atomic transaction log)
+     -> no partial data after a crash
+
+5. POISON RECORDS:
+   - A few bad rows must not kill the run ->
+     PERMISSIVE mode + dead letter queue (see Q10)
+
+WHAT HAPPENS ON A RE-RUN (the interview answer):
+  No fault tolerance            -> duplicates + 3 hours lost, SLA blown
+  Retry only                    -> survives transient errors, loses progress
+  Retry + checkpoint            -> resumes from the last good progress
+  Retry + checkpoint + idempotency -> SAFE: same result as one clean run
+
+INTERVIEW POINT:
+  Retries handle TRANSIENT failures; checkpoints handle PROGRESS;
+  idempotency handles RE-RUNS. Production needs all three.
+"""
+
+from pyspark.sql import functions as F
+
+# Idempotency demo: the SAME batch written twice (job failed, then retried)
+# must still yield exactly one copy per order
+batch = spark.createDataFrame(
+    [(1, "PLACED"), (2, "SHIPPED")], "order_id INT, status STRING"
+).withColumn("batch_id", F.lit(42))
+
+written_twice = batch.union(batch)  # simulate the failed-then-retried append
+
+result = written_twice.dropDuplicates(["order_id"]).orderBy("order_id")
+print("Rows in target after the re-run (dedup by order_id):", result.count())
+display(result)
+
+# COMMAND ----------
+
+# DBTITLE 1,Q12: Kimball vs Inmon
+# MAGIC %md
+# MAGIC ## 📊 Section 6: Data Modeling (2 Questions)
+# MAGIC
+# MAGIC ---
+# MAGIC ### Q12: Kimball vs Inmon
+# MAGIC
+# MAGIC **Question**: Explain the difference between the **Kimball** and **Inmon** data warehouse methodologies. Which approach does the **medallion architecture** (Bronze/Silver/Gold) resemble, and why?
+
+# COMMAND ----------
+
+# DBTITLE 1,Solution Q12
+# SOLUTION Q12
 
 """
 INMON (top-down):
@@ -570,17 +647,17 @@ print("See comments for the full comparison.")
 
 # COMMAND ----------
 
-# DBTITLE 1,Q12: Fact Table Types
+# DBTITLE 1,Q13: Fact Table Types
 # MAGIC %md
 # MAGIC ---
-# MAGIC ### Q12: Types of Fact Tables
+# MAGIC ### Q13: Types of Fact Tables
 # MAGIC
 # MAGIC **Question**: Explain the three main types of **fact tables** — transactional, periodic snapshot, and accumulating snapshot. Give a real example of each, and state how a row changes over time in each type.
 
 # COMMAND ----------
 
-# DBTITLE 1,Solution Q12
-# SOLUTION Q12
+# DBTITLE 1,Solution Q13
+# SOLUTION Q13
 
 """
 1. TRANSACTION FACTS:
@@ -616,19 +693,19 @@ print("See comments for the full explanation.")
 
 # COMMAND ----------
 
-# DBTITLE 1,Q13: Virtual Warehouses
+# DBTITLE 1,Q14: Virtual Warehouses
 # MAGIC %md
 # MAGIC ## ❄️ Section 7: Snowflake (2 Questions)
 # MAGIC
 # MAGIC ---
-# MAGIC ### Q13: Virtual Warehouses — Auto-Suspend, Auto-Resume & Multi-Cluster
+# MAGIC ### Q14: Virtual Warehouses — Auto-Suspend, Auto-Resume & Multi-Cluster
 # MAGIC
 # MAGIC **Question**: Explain Snowflake **virtual warehouses** and the settings `AUTO_SUSPEND`, `AUTO_RESUME`, and `MIN_CLUSTER_COUNT` / `MAX_CLUSTER_COUNT` (multi-cluster). How do these control **cost** and **concurrency**?
 
 # COMMAND ----------
 
-# DBTITLE 1,Solution Q13
-# SOLUTION Q13
+# DBTITLE 1,Solution Q14
+# SOLUTION Q14
 
 """
 VIRTUAL WAREHOUSE (VW):
@@ -671,17 +748,17 @@ print("See comments for the full explanation.")
 
 # COMMAND ----------
 
-# DBTITLE 1,Q14: Time Travel & Cloning
+# DBTITLE 1,Q15: Time Travel & Cloning
 # MAGIC %md
 # MAGIC ---
-# MAGIC ### Q14: Time Travel & Zero-Copy Cloning
+# MAGIC ### Q15: Time Travel & Zero-Copy Cloning
 # MAGIC
 # MAGIC **Question**: Explain Snowflake **Time Travel** and **zero-copy cloning**. How do you recover a dropped table or undo a bad `UPDATE`? What is **Fail-safe**? What makes a clone stop being "zero-copy" over time?
 
 # COMMAND ----------
 
-# DBTITLE 1,Solution Q14
-# SOLUTION Q14
+# DBTITLE 1,Solution Q15
+# SOLUTION Q15
 
 """
 TIME TRAVEL:
@@ -719,12 +796,12 @@ print("See comments for the full explanation.")
 
 # COMMAND ----------
 
-# DBTITLE 1,Q15: Pipeline Orchestration
+# DBTITLE 1,Q16: Pipeline Orchestration
 # MAGIC %md
 # MAGIC ## 🛠️ Section 8: Monitoring, Logging & Orchestration (3 Questions)
 # MAGIC
 # MAGIC ---
-# MAGIC ### Q15: Pipeline Orchestration in Databricks
+# MAGIC ### Q16: Pipeline Orchestration in Databricks
 # MAGIC
 # MAGIC **Scenario**: You have a multi-step ETL pipeline: extract from S3 → transform in Bronze → Silver → Gold → send notification. Steps depend on each other and some can fail.
 # MAGIC
@@ -734,8 +811,8 @@ print("See comments for the full explanation.")
 
 # COMMAND ----------
 
-# DBTITLE 1,Solution Q15
-# SOLUTION Q15
+# DBTITLE 1,Solution Q16
+# SOLUTION Q16
 
 """
 DATABRICKS JOBS — the native orchestrator:
@@ -783,10 +860,10 @@ print("See comments for the full explanation.")
 
 # COMMAND ----------
 
-# DBTITLE 1,Q16: Pipeline Monitoring
+# DBTITLE 1,Q17: Pipeline Monitoring
 # MAGIC %md
 # MAGIC ---
-# MAGIC ### Q16: Monitoring a Data Pipeline (Observability)
+# MAGIC ### Q17: Monitoring a Data Pipeline (Observability)
 # MAGIC
 # MAGIC **Scenario**: Your nightly ETL runs "green" (no failures), but analysts complain the reports are wrong — volumes dropped silently, data is stale.
 # MAGIC
@@ -796,8 +873,8 @@ print("See comments for the full explanation.")
 
 # COMMAND ----------
 
-# DBTITLE 1,Solution Q16
-# SOLUTION Q16
+# DBTITLE 1,Solution Q17
+# SOLUTION Q17
 
 """
 MONITORING = PIPELINE-LEVEL + DATA-LEVEL
@@ -837,10 +914,10 @@ print("See comments for the full explanation.")
 
 # COMMAND ----------
 
-# DBTITLE 1,Q17: Logging & Debugging
+# DBTITLE 1,Q18: Logging & Debugging
 # MAGIC %md
 # MAGIC ---
-# MAGIC ### Q17: Logging & Debugging Best Practices (Spark / Databricks)
+# MAGIC ### Q18: Logging & Debugging Best Practices (Spark / Databricks)
 # MAGIC
 # MAGIC **Question**: What are the **logging best practices** for Spark/Databricks pipelines (log4j levels, Python `logging` vs `print`, what to log)? Walk me through **debugging a job that failed at 3 AM** — where exactly do you look?
 # MAGIC
@@ -848,8 +925,8 @@ print("See comments for the full explanation.")
 
 # COMMAND ----------
 
-# DBTITLE 1,Solution Q17
-# SOLUTION Q17
+# DBTITLE 1,Solution Q18
+# SOLUTION Q18
 
 """
 LOGGING BEST PRACTICES:
@@ -897,7 +974,7 @@ print("See comments for the full explanation.")
 # MAGIC ---
 # MAGIC ## ✅ Day 2 Complete!
 # MAGIC
-# MAGIC **17 questions covered across 8 categories.**
+# MAGIC **18 questions covered across 8 categories.**
 # MAGIC
 # MAGIC ### Score Yourself:
 # MAGIC | Category | Questions | Your Score |
@@ -906,12 +983,12 @@ print("See comments for the full explanation.")
 # MAGIC | Python | 2 | / 2 |
 # MAGIC | PySpark | 2 | / 2 |
 # MAGIC | Spark Optimization | 2 | / 2 |
-# MAGIC | ETL | 2 | / 2 |
+# MAGIC | ETL | 3 | / 3 |
 # MAGIC | Data Modeling | 2 | / 2 |
 # MAGIC | Snowflake | 2 | / 2 |
 # MAGIC | Monitoring, Logging & Orchestration | 3 | / 3 |
 # MAGIC
-# MAGIC **Total: / 17**
+# MAGIC **Total: / 18**
 # MAGIC
 # MAGIC ---
 # MAGIC Next day: `day_03` notebook with fresh questions! 🚀
