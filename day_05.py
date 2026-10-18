@@ -16,8 +16,9 @@
 # MAGIC | 6 | Data Modeling | 2 |
 # MAGIC | 7 | Snowflake | 2 |
 # MAGIC | 8 | Monitoring, Logging & Orchestration | 3 |
+# MAGIC | 9 | Production Pillars — Security & Backfills (Project-Based) | 2 |
 # MAGIC
-# MAGIC **Total**: 18 questions
+# MAGIC **Total**: 20 questions
 # MAGIC
 # MAGIC **Difficulty**: BASIC → INTERMEDIATE (Week 1)
 # MAGIC
@@ -1317,12 +1318,196 @@ FROM fact_orders;
 
 # COMMAND ----------
 
+# DBTITLE 1,Q19: Security in My Pipelines
+# MAGIC %md
+# MAGIC ## 🔐 Section 9: Production Pillars — Security & Backfills (Project-Based) (2 Questions)
+# MAGIC
+# MAGIC ---
+# MAGIC ### Q19: Security in MY Pipelines — FraudStream + Tesla [INTERMEDIATE]
+# MAGIC
+# MAGIC **Scenario**: Interviewer asks: "Your fraud pipeline has card numbers and your telemetry pipeline has driver VIN/phone. How is YOUR pipeline secured — access, credentials, encryption, and PII?"
+# MAGIC
+# MAGIC **Question**: Answer using your actual projects. Cover 4 layers: **access control** (Unity Catalog grants — who reads bronze vs gold), **credentials/secrets** (how the Snowflake sync gets its password), **encryption** (S3 at rest, TLS in transit), and **PII handling** (card numbers in FraudStream, VIN/driver data in Tesla). Frame every answer as "in my pipeline, ...".
+# MAGIC
+# MAGIC **Hint**: Study order: UC grants (catalog→schema→table) → secret scopes + dbutils.secrets → S3 SSE-KMS → hash/tokenize at ingestion + column masks. Interview bolne ka order: "4 layers — access, secrets, encryption, PII — and in my projects..."
+
+# COMMAND ----------
+
+# DBTITLE 1,Solution Q19
+# SOLUTION Q19
+
+"""
+SECURITY — MODEL ANSWER IN "MY PROJECT" STYLE
+(Study this as a story you tell about YOUR pipelines, not as a list)
+
+INTERVIEW OPENING LINE:
+  "I think of pipeline security in 4 layers — access control, secrets,
+   encryption, and PII handling. In my projects, FraudStream and Tesla
+   telemetry, each layer looks like this..."
+
+LAYER 1 — ACCESS CONTROL (Unity Catalog):
+  1-line: least privilege per layer, via UC grants.
+  Detail: catalog → schema → table hierarchy; pipelines run as a SERVICE
+    PRINCIPAL, not my user.
+  MY PROJECT: bronze (raw) schemas readable only by the pipeline principal —
+    analysts get SELECT on gold only (silver/silver-adjacent tables stay
+    private because raw PII lives there). FraudStream alerts table readable
+    by the fraud-ops team; Tesla gold by BI.
+  Key syntax to remember:
+      GRANT SELECT ON SCHEMA gold TO `analysts`;
+      GRANT WRITE ON SCHEMA silver TO `pipeline-runner`;
+
+LAYER 2 — SECRETS / CREDENTIALS:
+  1-line: zero hardcoded credentials — everything from secret scopes.
+  Detail: dbutils.secrets.get(scope, key) at runtime; scope backed by
+    AWS Secrets Manager; rotation without code change.
+  MY PROJECT: the Tesla gold → Snowflake sync job reads the Snowflake
+    password/warehouse creds from a secret scope — the notebook has
+    NO password in it, so it's safe to commit to git.
+      snowflake_pwd = dbutils.secrets.get(scope='prod', key='snowflake-pwd')
+  S3 access: UC external locations + storage credentials (instance
+    profile) — no access keys anywhere.
+
+LAYER 3 — ENCRYPTION:
+  1-line: encrypted at rest (S3 SSE-KMS) and in transit (TLS), by default.
+  Detail: Delta tables on S3 inherit bucket-level encryption; Snowflake
+    side supports customer-managed keys (Tri-Secret Secure) if compliance
+    needs it; JDBC/Kafka connections over TLS.
+  MY PROJECT: both pipelines read/write S3 buckets with SSE-KMS enabled;
+    the Snowflake JDBC URL uses SSL.
+
+LAYER 4 — PII HANDLING (the layer interviewers probe hardest):
+  1-line: classify early, hash/tokenize at ingestion, mask at query time.
+  MY PROJECT (FraudStream): card numbers → HASHED at ingestion
+    (tokenization; store only last-4 + hash for joins). The alerts table
+    never carries a raw PAN. Fraud-ops sees masked output; only the masked
+    view is exposed to dashboards.
+  MY PROJECT (Tesla): driver phone/address → column masking policies;
+    VIN → hashed for joins in silver, full VIN only where strictly needed.
+    Logs/alerts NEVER print raw PII — I scrub payloads before logging.
+  Column mask syntax to remember:
+      CREATE FUNCTION mask_phone(phone STRING) RETURN CASE
+        WHEN is_account_group_member('fraud-team') THEN phone
+        ELSE CONCAT('***-***-', RIGHT(phone, 4)) END;
+      ALTER TABLE gold.driver_profiles
+        ALTER COLUMN phone SET MASKING POLICY mask_phone;
+
+FOLLOW-UPS INTERVIEWERS ASK (be ready):
+  - "Where do you store secrets?" → secret scopes backed by AWS Secrets
+    Manager; nothing in notebooks or DAB files.
+  - "What if a PII column sneaks into bronze?" → UC sensitive-data
+    classification flags it; alert + move/hash it in the next silver run.
+  - "Who can see raw card data?" → almost nobody: hashed at ingestion,
+    so NOBODY re-derives PAN — even I can't.
+
+STUDY TIP:
+  Don't memorize this as 4 topics. Memorize ONE sentence per layer + one
+  project example per layer. In the interview, each layer takes ~30 sec:
+  "In my pipeline, X is handled by Y, for example Z."
+"""
+
+print("See comments for the full project-based explanation.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Q20: Backfilling My Tesla Pipeline
+# MAGIC %md
+# MAGIC ---
+# MAGIC ### Q20: Backfilling MY Tesla Pipeline — Silver Bug, 90 Bad Partitions [INTERMEDIATE]
+# MAGIC
+# MAGIC **Scenario**: Interviewer asks: "A bug in your silver transformation was found after 3 months — 90 daily partitions of `silver.enriched_telemetry` have wrong battery-health math. The daily job must keep running. What do you do?"
+# MAGIC
+# MAGIC **Question**: Walk through the backfill for YOUR pipeline: the **idempotent partition-overwrite pattern** (`replaceWhere` / `INSERT OVERWRITE ... PARTITION`), how you **isolate** the backfill from the daily schedule, how you **validate** before cutover, and how you **control cost**. Answer as "in my Tesla pipeline, ..." — a story, not a checklist.
+# MAGIC
+# MAGIC **Hint**: Study order: fix-forward → targeted overwrite (idempotent) → separate job → staging compare → time travel as safety net. Interview bolne ka order: "First I'd fix the code, then recompute history surgically without touching the daily schedule..."
+
+# COMMAND ----------
+
+# DBTITLE 1,Solution Q20
+# SOLUTION Q20
+
+"""
+BACKFILL — MODEL ANSWER IN "MY PROJECT" STYLE
+(A 90-second story about YOUR Tesla pipeline)
+
+INTERVIEW OPENING LINE:
+  "First I'd fix the transformation code forward — then recompute history
+   surgically, without stopping the daily job. In my Tesla pipeline it
+   would look like this..."
+
+STEP 1 — FIX FORWARD FIRST:
+  - Confirm the bug really affects gold too (does battery-health roll up
+    into gold KPIs? if yes, gold needs recompute as well).
+  - Fix the silver transformation, unit-test it on ONE known bad day.
+
+STEP 2 — SURGICAL, IDEMPOTENT OVERWRITE (the core pattern):
+  - My silver table is partitioned by event_date, so I overwrite ONLY the
+    bad date range — never drop/recreate the table:
+
+      (fixed_df.writeTo('silver.enriched_telemetry')
+           .replaceWhere('event_date BETWEEN "2026-07-20" AND "2026-10-17"')
+           .overwrite())
+
+      -- or, per-day in SQL:
+      INSERT OVERWRITE silver.enriched_telemetry PARTITION (event_date = '2026-08-01')
+      SELECT ... FROM bronze.raw_telemetry WHERE event_date = '2026-08-01';
+
+  - WHY IDEMPOTENT (say this line): the overwrite atomically replaces those
+    partitions — if the backfill crashes at day 45 and I re-run, days 1-44
+    are rewritten with the SAME data. No duplicates, no double-processing.
+    That's the difference between a backfill plan and a resume-from-hell.
+
+STEP 3 — ISOLATE FROM THE DAILY JOB:
+  - Daily job keeps its 2 AM schedule untouched — it only writes TODAY's
+    partition anyway, so no conflict (Delta optimistic concurrency handles
+    different files in the same table).
+  - Backfill runs as a SEPARATE one-time job on a bigger cluster.
+  - My daily notebook already takes start_date/end_date parameters, so the
+    SAME notebook does both: daily run (today) and backfill (90-day range).
+    One code path, two use cases — nothing new to test.
+
+STEP 4 — VALIDATE BEFORE CUTOVER:
+  - Compute the corrected 90 days into a STAGING table first, then compare:
+      SELECT * FROM silver.enriched_telemetry
+      WHERE event_date BETWEEN '2026-07-20' AND '2026-10-17'
+      EXCEPT SELECT * FROM silver_backfill_compare;  -- should show ONLY expected diffs
+  - Check aggregates on a few known vehicles: SUM(battery_health), row counts.
+  - Snapshot the table before overwriting (DESCRIBE HISTORY) → if my "fix"
+    makes things worse, time travel restores in one command.
+
+STEP 5 — COST CONTROL:
+  - Split into 3 jobs of 30 days (better retry granularity, less spill).
+  - Reuse bronze raw data — never re-ingest from S3.
+  - Autoscale + auto-terminate the backfill cluster.
+
+FOLLOW-UPS INTERVIEWERS ASK (be ready):
+  - "Why not just re-run the daily job 90 times?" → same thing at small
+    scale, but a parameterized backfill job is faster, parallel, and has
+    one validation point instead of 90.
+  - "What about late-arriving data during the backfill?" → the daily job
+    still appends today's partition; if a historical file lands, the
+    next daily run picks it up and I re-run that one partition.
+  - "How do you prevent this next time?" → unit tests on transformations
+    + metrics table with per-partition row counts (drift = early warning)
+    + DQ checks per run.
+
+STUDY TIP:
+  The whole answer is ONE sentence with 5 steps: fix → surgically
+  overwrite (idempotent) → separate job → validate vs staging → control
+  cost. Practice saying it out loud in 90 seconds with the replaceWhere
+  syntax as your "I've actually done this" proof.
+"""
+
+print("See comments for the full project-based explanation.")
+
+# COMMAND ----------
+
 # DBTITLE 1,Day 5 Complete
 # MAGIC %md
 # MAGIC ---
 # MAGIC ## ✅ Day 5 Complete!
 # MAGIC
-# MAGIC **18 questions covered across 8 categories.**
+# MAGIC **20 questions covered across 9 categories.**
 # MAGIC
 # MAGIC ### Score Yourself:
 # MAGIC | Category | Questions | Your Score |
@@ -1335,8 +1520,9 @@ FROM fact_orders;
 # MAGIC | Data Modeling | 2 | / 2 |
 # MAGIC | Snowflake | 2 | / 2 |
 # MAGIC | Monitoring, Logging & Orchestration | 3 | / 3 |
+# MAGIC | Production Pillars (Security, Backfills — Project) | 2 | / 2 |
 # MAGIC
-# MAGIC **Total: / 18**
+# MAGIC **Total: / 20**
 # MAGIC
 # MAGIC ---
 # MAGIC Next day: `day_06` notebook with fresh questions! 🚀
